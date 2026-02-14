@@ -462,6 +462,46 @@ def _event_marker_geometry_xml(event_def, w_in, h_in):
     return ''
 
 
+def _subprocess_marker_geometry_xml(w_in, h_in):
+    """Return Geometry sections for a callActivity/subProcess [+] marker.
+
+    Draws a small square with a plus sign centered at the bottom edge of the shape,
+    following the BPMN convention for collapsed sub-processes and call activities."""
+    cx = _r(w_in / 2)
+    # Marker box size
+    box = 0.12  # side length in inches
+    hbox = box / 2
+    # Position: centered horizontally, sitting on bottom edge with small margin
+    margin_y = 0.04
+    by = margin_y + hbox  # center Y of the marker box
+
+    # Cross line size (slightly smaller than box)
+    cross = hbox * 0.65
+
+    # Geometry IX=1: square border
+    sq = f'''<Section N="Geometry" IX="1">
+<Cell N="NoFill" V="1"/>
+<Cell N="NoLine" V="0"/>
+<Row T="MoveTo" IX="1"><Cell N="X" V="{_r(cx - hbox)}"/><Cell N="Y" V="{_r(by - hbox)}"/></Row>
+<Row T="LineTo" IX="2"><Cell N="X" V="{_r(cx + hbox)}"/><Cell N="Y" V="{_r(by - hbox)}"/></Row>
+<Row T="LineTo" IX="3"><Cell N="X" V="{_r(cx + hbox)}"/><Cell N="Y" V="{_r(by + hbox)}"/></Row>
+<Row T="LineTo" IX="4"><Cell N="X" V="{_r(cx - hbox)}"/><Cell N="Y" V="{_r(by + hbox)}"/></Row>
+<Row T="LineTo" IX="5"><Cell N="X" V="{_r(cx - hbox)}"/><Cell N="Y" V="{_r(by - hbox)}"/></Row>
+</Section>'''
+
+    # Geometry IX=2: plus sign (+)
+    plus = f'''<Section N="Geometry" IX="2">
+<Cell N="NoFill" V="1"/>
+<Cell N="NoLine" V="0"/>
+<Row T="MoveTo" IX="1"><Cell N="X" V="{cx}"/><Cell N="Y" V="{_r(by - cross)}"/></Row>
+<Row T="LineTo" IX="2"><Cell N="X" V="{cx}"/><Cell N="Y" V="{_r(by + cross)}"/></Row>
+<Row T="MoveTo" IX="3"><Cell N="X" V="{_r(cx - cross)}"/><Cell N="Y" V="{_r(by)}"/></Row>
+<Row T="LineTo" IX="4"><Cell N="X" V="{_r(cx + cross)}"/><Cell N="Y" V="{_r(by)}"/></Row>
+</Section>'''
+
+    return sq + '\n' + plus
+
+
 def _shape_geometry_xml(category, w_in, h_in, header_width_in=0):
     """Return Visio Geometry Section XML for a shape category."""
     hw = _r(w_in / 2)
@@ -618,10 +658,12 @@ def _fill_xml(category, fill_color=None):
         return '<Cell N="FillForegnd" V="#FFFFFF"/><Cell N="FillForegndTrans" V="0"/>'
 
 
-def _line_xml(category, stroke_color=None):
+def _line_xml(category, stroke_color=None, elem_type=''):
     """Return line style cells."""
     if category == 'end_event':
         weight = '0.04'  # thick border for end events (BPMN convention)
+    elif elem_type in ('callActivity', 'subProcess'):
+        weight = '0.04'  # thick border for callActivity/subProcess (BPMN convention)
     elif category in ('participant', 'lane'):
         weight = '0.01'
     elif category == 'annotation':
@@ -793,8 +835,10 @@ def build_shape_xml(shape_id, category, pin_x, pin_y, w, h, name,
         marker_geom = _marker_geometry_xml(elem_type, w, h)
     elif category in ('start_event', 'end_event', 'intermediate_event') and event_def:
         marker_geom = _event_marker_geometry_xml(event_def, w, h)
+    elif category == 'task' and elem_type in ('callActivity', 'subProcess'):
+        marker_geom = _subprocess_marker_geometry_xml(w, h)
     fill = _fill_xml(category, fill_color)
-    line = _line_xml(category, stroke_color)
+    line = _line_xml(category, stroke_color, elem_type=elem_type)
     text = _text_xml(name)
     text_block = _text_block_xml(category, w, h, label_offset=label_offset,
                                  header_width_in=header_width_in, is_horizontal=is_horizontal)
@@ -843,6 +887,73 @@ def build_shape_xml(shape_id, category, pin_x, pin_y, w, h, name,
 {geom}
 {marker_geom}
 {text}
+</Shape>'''
+
+
+def build_label_shape_xml(shape_id, pin_x, pin_y, lbl_w, lbl_h, text):
+    """Build a separate invisible text-only shape for labels outside their parent shape.
+
+    This is the standard approach used by Camunda, bpmn.io, and Bizagi BPMN exporters
+    to position labels outside event/gateway shapes. Visio Desktop clips TxtPinX/TxtPinY
+    to the parent shape's geometry bounds, so a separate shape is the only reliable way
+    to place text outside a circle or diamond.
+
+    pin_x, pin_y: Visio page coordinates for the label center.
+    lbl_w, lbl_h: label dimensions in inches.
+    text: the label text string.
+    """
+    if not text:
+        return ''
+    lbl_w = _r(max(lbl_w, 0.8))
+    lbl_h = _r(max(lbl_h, 0.25))
+    pin_x = _r(pin_x)
+    pin_y = _r(pin_y)
+    label_size = _r(6 / 72)  # 6pt
+    escaped = _escape_xml(text)
+    return f'''<Shape ID="{shape_id}" NameU="Label.{shape_id}" Type="Shape">
+<Cell N="PinX" V="{pin_x}"/>
+<Cell N="PinY" V="{pin_y}"/>
+<Cell N="Width" V="{lbl_w}"/>
+<Cell N="Height" V="{lbl_h}"/>
+<Cell N="LocPinX" V="{_r(lbl_w / 2)}"/>
+<Cell N="LocPinY" V="{_r(lbl_h / 2)}"/>
+<Cell N="Angle" V="0"/>
+<Cell N="FlipX" V="0"/>
+<Cell N="FlipY" V="0"/>
+<Cell N="ResizeMode" V="0"/>
+<Cell N="TxtAngle" V="0"/>
+<Cell N="TxtPinX" V="{_r(lbl_w / 2)}"/>
+<Cell N="TxtPinY" V="{_r(lbl_h / 2)}"/>
+<Cell N="TxtWidth" V="{lbl_w}"/>
+<Cell N="TxtHeight" V="{lbl_h}"/>
+<Cell N="TxtLocPinX" V="{_r(lbl_w / 2)}"/>
+<Cell N="TxtLocPinY" V="{_r(lbl_h / 2)}"/>
+<Cell N="FillForegnd" V="#FFFFFF"/>
+<Cell N="FillForegndTrans" V="1"/>
+<Cell N="FillPattern" V="0"/>
+<Cell N="LinePattern" V="0"/>
+<Section N="Geometry" IX="0">
+<Cell N="NoFill" V="1"/>
+<Cell N="NoLine" V="1"/>
+<Row T="MoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
+<Row T="LineTo" IX="2"><Cell N="X" V="{lbl_w}"/><Cell N="Y" V="0"/></Row>
+<Row T="LineTo" IX="3"><Cell N="X" V="{lbl_w}"/><Cell N="Y" V="{lbl_h}"/></Row>
+<Row T="LineTo" IX="4"><Cell N="X" V="0"/><Cell N="Y" V="{lbl_h}"/></Row>
+<Row T="LineTo" IX="5"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
+</Section>
+<Section N="Character" IX="0">
+<Row IX="0">
+<Cell N="Font" V="0"/>
+<Cell N="Size" V="{label_size}"/>
+<Cell N="Color" V="#333333"/>
+</Row>
+</Section>
+<Section N="Paragraph" IX="0">
+<Row IX="0">
+<Cell N="HorzAlign" V="1"/>
+</Row>
+</Section>
+<Text>{escaped}</Text>
 </Shape>'''
 
 
@@ -980,11 +1091,24 @@ def _build_line_shape(shape_id, name_prefix, waypoints, page_h, offset_x, offset
     # Convert all waypoints to Visio page coordinates
     pts = [wp_to_visio(wp['x'], wp['y'], page_h, offset_x, offset_y) for wp in waypoints]
 
-    # Compute bounding box
+    # Compute bounding box from waypoints
     all_x = [p[0] for p in pts]
     all_y = [p[1] for p in pts]
     bb_min_x, bb_max_x = min(all_x), max(all_x)
     bb_min_y, bb_max_y = min(all_y), max(all_y)
+
+    # Expand bounding box to include label area (if label falls outside waypoint bounds)
+    # Without this, label local coordinates can exceed shape Width/Height and Visio clips them
+    if label and label_pos:
+        lbl_cx = label_pos['x'] + label_pos['w'] / 2
+        lbl_cy = label_pos['y'] + label_pos['h'] / 2
+        lbl_vx, lbl_vy = wp_to_visio(lbl_cx, lbl_cy, page_h, offset_x, offset_y)
+        lbl_hw = label_pos['w'] / PPI / 2  # half-width in inches
+        lbl_hh = label_pos['h'] / PPI / 2  # half-height in inches
+        bb_min_x = min(bb_min_x, lbl_vx - lbl_hw)
+        bb_max_x = max(bb_max_x, lbl_vx + lbl_hw)
+        bb_min_y = min(bb_min_y, lbl_vy - lbl_hh)
+        bb_max_y = max(bb_max_y, lbl_vy + lbl_hh)
 
     # Ensure non-zero dimensions (degenerate lines)
     w = max(bb_max_x - bb_min_x, 0.01)
@@ -1147,6 +1271,7 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
 
     # Compute header widths from actual BPMN coordinates (data-driven)
     # For each participant with lanes, header_width = min(lane_x) - participant_x
+    DEFAULT_HEADER_PX = 30
     header_widths = {}  # bpmn_id -> header_width_in_pixels
     # Track lanes that should be hidden (single unnamed lane = structural only, invisible in bpmn.io)
     hidden_lanes = set()
@@ -1156,6 +1281,7 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
             lane_xs = [shapes[lid]['x'] for lid in lane_ids if lid in shapes]
             if lane_xs:
                 header_px = min(lane_xs) - part_x  # e.g., 160 - 130 = 30px
+                header_px = max(header_px, DEFAULT_HEADER_PX)  # guard against zero/negative
                 header_widths[part_id] = header_px
                 # Check if this is a mono-lane pool (single unnamed lane)
                 # In bpmn.io, a single lane with no name is invisible — only the pool header shows
@@ -1172,7 +1298,6 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
     # a header band if they are horizontal pools. But lane-less pools (no lanes at all,
     # e.g. external participants like Customer) should NOT get a header band — they
     # render as simple rectangles with centered horizontal text in bpmn.io.
-    DEFAULT_HEADER_PX = 30
     for part_id, lane_ids in participant_lanes.items():
         if part_id not in header_widths and part_id in shapes:
             # This participant had lanes but they were all hidden (mono-lane unnamed)
@@ -1226,7 +1351,15 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
         is_horizontal = s.get('is_horizontal', True)
 
         shape_id_map[bpmn_id] = next_id
-        shape_xml = build_shape_xml(next_id, category, pin_x, pin_y, w, h, elem_info['name'],
+
+        # For events/gateways with names, use a separate label shape instead of
+        # in-shape text blocks. Visio Desktop clips TxtPinX/TxtPinY to the shape's
+        # geometry bounds, so text positioned outside circles/diamonds gets clipped.
+        use_separate_label = (category in ('start_event', 'end_event',
+                              'intermediate_event', 'gateway') and elem_info['name'])
+
+        shape_name = '' if use_separate_label else elem_info['name']
+        shape_xml = build_shape_xml(next_id, category, pin_x, pin_y, w, h, shape_name,
                                     fill_color=s.get('fill_color'), stroke_color=s.get('stroke_color'),
                                     label_offset=label_offset,
                                     header_width_in=header_width_in, is_horizontal=is_horizontal,
@@ -1241,6 +1374,25 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
         else:
             fg_parts.append(shape_xml)
         next_id += 1
+
+        # Create separate label shape for events/gateways
+        if use_separate_label:
+            if 'label_x' in s:
+                # Use BPMN label bounds (absolute coordinates)
+                lbl_pin_x, lbl_pin_y, lbl_w, lbl_h = bpmn_to_visio_coords(
+                    s['label_x'], s['label_y'], s['label_w'], s['label_h'],
+                    page_h, offset_x, offset_y)
+            else:
+                # Fallback: position label below the shape
+                lbl_w = max(w * 2.5, 1.2)
+                lbl_h = 0.35
+                lbl_pin_x = pin_x
+                lbl_pin_y = pin_y - h / 2 - lbl_h / 2 - 0.04
+            label_xml = build_label_shape_xml(next_id, lbl_pin_x, lbl_pin_y,
+                                               lbl_w, lbl_h, elem_info['name'])
+            if label_xml:
+                fg_parts.append(label_xml)
+                next_id += 1
 
     shape_xml_parts = pool_parts + lane_parts + fg_parts + annot_parts
 
