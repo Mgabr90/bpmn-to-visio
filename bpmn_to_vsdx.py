@@ -1553,6 +1553,11 @@ def get_process_name_from_filename(filename):
     return name.strip()
 
 
+def convert_bpmn_to_vsdx(bpmn_path, output_dir=None):
+    """Public API: Convert a BPMN file to VSDX. Returns output path or None."""
+    return convert_file(bpmn_path, output_dir)
+
+
 def convert_file(bpmn_path, output_dir=None):
     """Convert a single BPMN file to VSDX."""
     bpmn_path = Path(bpmn_path)

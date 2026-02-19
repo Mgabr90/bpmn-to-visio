@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bpmn-to-visio"
+version = "1.1.0"
+description = "Convert BPMN 2.0 diagrams to Microsoft Visio (.vsdx) files — zero dependencies, pure Python"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Mahmoud Gabr", email = "mgabr90@gmail.com"},
+]
+requires-python = ">=3.7"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+keywords = [
+    "bpmn", "visio", "vsdx", "converter", "bpmn2", "process-modeling",
+    "business-process", "diagram", "workflow", "open-xml",
+]
+
+[project.urls]
+Homepage = "https://github.com/Mgabr90/bpmn-to-visio"
+Repository = "https://github.com/Mgabr90/bpmn-to-visio"
+Issues = "https://github.com/Mgabr90/bpmn-to-visio/issues"
+
+[project.scripts]
+bpmn-to-visio = "bpmn_to_vsdx:main"
+
+[tool.setuptools]
+py-modules = ["bpmn_to_vsdx"]
