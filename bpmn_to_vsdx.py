@@ -159,7 +159,8 @@ def parse_bpmn(bpmn_path):
 
         if local_tag == 'BPMNShape':
             bpmn_element = elem.get('bpmnElement')
-            is_horizontal = elem.get('isHorizontal', '').lower() == 'true'
+            is_horiz_attr = elem.get('isHorizontal', '')
+            is_horizontal = is_horiz_attr.lower() == 'true' if is_horiz_attr else None
             bounds = None
             label_bounds = None
             for child in elem:
@@ -180,8 +181,8 @@ def parse_bpmn(bpmn_path):
                     'w': float(bounds.get('width', 100)),
                     'h': float(bounds.get('height', 80)),
                 }
-                if is_horizontal:
-                    shape_data['is_horizontal'] = True
+                if is_horizontal is not None:
+                    shape_data['is_horizontal'] = is_horizontal
                 # Extract BPMNLabel position (absolute coords in BPMN space)
                 if label_bounds is not None:
                     shape_data['label_x'] = float(label_bounds.get('x', 0))
@@ -1295,14 +1296,22 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
                         header_widths[lid] = header_px
 
     # Fallback: participants whose lanes are ALL hidden (mono-lane unnamed) still need
-    # a header band if they are horizontal pools. But lane-less pools (no lanes at all,
-    # e.g. external participants like Customer) should NOT get a header band — they
-    # render as simple rectangles with centered horizontal text in bpmn.io.
+    # a header band if they are horizontal pools.
     for part_id, lane_ids in participant_lanes.items():
         if part_id not in header_widths and part_id in shapes:
             # This participant had lanes but they were all hidden (mono-lane unnamed)
-            if shapes[part_id].get('is_horizontal', False):
+            if shapes[part_id].get('is_horizontal', True):
                 header_widths[part_id] = DEFAULT_HEADER_PX
+
+    # Lane-less participants (e.g. external "Customer" pools with no <laneSet>)
+    # also need a header band for vertical text in Visio — they are not in
+    # participant_lanes at all, so handle them separately.
+    for elem_id, elem_info in elements.items():
+        if (elem_info['type'] == 'participant'
+                and elem_id not in header_widths
+                and elem_id in shapes
+                and shapes[elem_id].get('is_horizontal', True)):
+            header_widths[elem_id] = DEFAULT_HEADER_PX
 
     # Build lookup: which lane belongs to which participant
     lane_to_participant = {}
