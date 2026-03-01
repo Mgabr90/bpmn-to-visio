@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bpmn-to-visio"
-version = "1.1.0"
+version = "1.1.1"
 description = "Convert BPMN 2.0 diagrams to Microsoft Visio (.vsdx) files — zero dependencies, pure Python"
 readme = "README.md"
 license = {text = "MIT"}

@@ -700,15 +700,19 @@ def _text_xml(name):
     return f'<Text>{_escape_xml(name)}</Text>'
 
 
-def _char_section(category, font_size_pt=8):
+def _char_section(category, font_size_pt=8, text_color=None):
     """Return Character section for text formatting."""
     # Visio Size cell uses inches: pt / 72 = inches
     size_in = _r(font_size_pt / 72)
+    # Pool/lane labels use their stroke color; everything else uses dark grey
+    color = text_color or '#333333'
+    bold = '1' if category in ('participant', 'lane') else '0'
     return f'''<Section N="Character" IX="0">
 <Row IX="0">
 <Cell N="Font" V="0"/>
 <Cell N="Size" V="{size_in}"/>
-<Cell N="Color" V="#333333"/>
+<Cell N="Color" V="{color}"/>
+<Cell N="Style" V="{bold}"/>
 </Row>
 </Section>'''
 
@@ -858,7 +862,8 @@ def build_shape_xml(shape_id, category, pin_x, pin_y, w, h, name,
             font_size = 9
     else:
         font_size = 8
-    char = _char_section(category, font_size)
+    label_color = stroke_color if category in ('participant', 'lane') else None
+    char = _char_section(category, font_size, text_color=label_color)
     # Left-align annotations, center everything else
     para = _para_section(halign=0) if category == 'annotation' else _para_section()
 
