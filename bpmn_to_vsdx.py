@@ -59,179 +59,247 @@ ARROW_LENGTH = 0.12                # Arrowhead length in inches
 ARROW_WIDTH_RATIO = 0.35           # Arrowhead half-width as ratio of length
 
 
-# ── BPMN Parser ──────────────────────────────────────────────────────────────
 
+# ── BPMN Parser ──────────────────────────────────────────────────────────────
 def parse_bpmn(bpmn_path):
-    """Parse BPMN XML and extract elements, flows, and diagram coordinates."""
+    """Parse BPMN XML and extract elements, flows, and diagram coordinates.
+    Enrich with native Signavio colors (signavio:bgcolor/bordercolor)
+    and DI color extensions (bioc:* and BPMN-in-Color color:* as child elements).
+    """
+    from xml.etree import ElementTree as ET
     tree = ET.parse(bpmn_path)
     root = tree.getroot()
 
-    elements = {}   # id -> {type, name}
-    flows = []      # [{id, sourceRef, targetRef, name}]
-    shapes = {}     # bpmn_element_id -> {x, y, w, h}
-    edges = {}      # bpmn_element_id -> [{x, y}, ...]
+    elements = {}  # id -> {type, name, ...}
+    flows = []     # [{id, sourceRef, targetRef, name, type, (optional) stroke_color}]
+    shapes = {}    # bpmn_element_id -> {x, y, w, h, (optional) fill_color, stroke_color, ...}
+    edges = {}     # bpmn_element_id -> {waypoints: [{x,y},...], (optional) label, (optional) stroke_color}
 
-    # Track participant → process → lanes hierarchy
-    participant_process = {}  # participant_id -> processRef
-    process_lanes = {}        # processRef -> [lane_id, ...]
+    # Collect Signavio colors {element_id: {'fill': '#..', 'stroke': '#..'}} during pass 1
+    signavio_colors = {}
 
-    # Pass 1: Extract process elements and hierarchy
+    # Helper: local tag name
+    def local(tag):
+        return tag.split('}')[-1] if '}' in tag else tag
+
+    # Pass 1: Extract BPMN elements, flows, participants, lanes, and Signavio colors
+    participant_process = {}
+    process_lanes = {}
+
     for elem in root.iter():
-        local_tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+        lt = local(elem.tag)
+        # Collect Signavio meta on any BPMN element with id
+        eid = elem.get('id')
+        if eid:
+            fill = stroke = None
+            # Find extensionElements
+            for child in list(elem):
+                if local(child.tag) != 'extensionElements':
+                    continue
+                for md in list(child):
+                    if local(md.tag) == 'signavioMetaData':
+                        k = (md.get('metaKey') or '').lower()
+                        v = md.get('metaValue')
+                        if not v:
+                            continue
+                        if k == 'bgcolor':
+                            fill = v
+                        elif k == 'bordercolor':
+                            stroke = v
+            if fill or stroke:
+                signavio_colors[eid] = {'fill': fill, 'stroke': stroke}
 
-        if local_tag in SHAPE_TYPES:
+        if lt in SHAPE_TYPES:
             elem_id = elem.get('id')
             elem_name = elem.get('name', '')
             event_def = ''
-            if local_tag == 'textAnnotation' and not elem_name:
-                # textAnnotation stores text in a child <text> element
+            if lt == 'textAnnotation' and not elem_name:
                 for child in elem:
-                    child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                    if child_tag == 'text' and child.text:
+                    if local(child.tag) == 'text' and child.text:
                         elem_name = child.text
                         break
-            # Capture event definition type for intermediate events
-            if local_tag in ('intermediateCatchEvent', 'intermediateThrowEvent',
-                             'startEvent', 'endEvent', 'boundaryEvent'):
+            if lt in ('intermediateCatchEvent', 'intermediateThrowEvent', 'startEvent', 'endEvent', 'boundaryEvent'):
                 for child in elem:
-                    child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                    if child_tag.endswith('EventDefinition'):
-                        event_def = child_tag  # e.g., messageEventDefinition, timerEventDefinition
+                    ct = local(child.tag)
+                    if ct.endswith('EventDefinition'):
+                        event_def = ct
                         break
             if elem_id:
-                elem_data = {'type': local_tag, 'name': elem_name}
+                data = {'type': lt, 'name': elem_name}
                 if event_def:
-                    elem_data['event_def'] = event_def
-                elements[elem_id] = elem_data
-
-        elif local_tag in ('sequenceFlow', 'messageFlow', 'association'):
+                    data['event_def'] = event_def
+                elements[elem_id] = data
+        elif lt in ('sequenceFlow', 'messageFlow', 'association'):
             flow_id = elem.get('id')
             source = elem.get('sourceRef')
             target = elem.get('targetRef')
             name = elem.get('name', '')
             if flow_id and source and target:
-                flows.append({'id': flow_id, 'sourceRef': source, 'targetRef': target,
-                              'name': name, 'type': local_tag})
-
-        elif local_tag == 'participant':
+                f = {'id': flow_id, 'sourceRef': source, 'targetRef': target, 'name': name, 'type': lt}
+                # If Signavio bordercolor present on the flow, capture as stroke_color
+                sc = None
+                for child in list(elem):
+                    if local(child.tag) != 'extensionElements':
+                        continue
+                    for md in list(child):
+                        if local(md.tag) == 'signavioMetaData':
+                            if (md.get('metaKey') or '').lower() == 'bordercolor' and md.get('metaValue'):
+                                sc = md.get('metaValue')
+                if sc:
+                    f['stroke_color'] = sc
+                flows.append(f)
+        elif lt == 'participant':
             elem_id = elem.get('id')
             elem_name = elem.get('name', '')
             process_ref = elem.get('processRef', '')
             if elem_id:
-                elements[elem_id] = {'type': local_tag, 'name': elem_name}
+                elements[elem_id] = {'type': lt, 'name': elem_name}
                 if process_ref:
                     participant_process[elem_id] = process_ref
-
-        elif local_tag == 'lane':
+        elif lt == 'lane':
             elem_id = elem.get('id')
             elem_name = elem.get('name', '')
             if elem_id:
-                elements[elem_id] = {'type': local_tag, 'name': elem_name}
-
-        elif local_tag == 'laneSet':
-            # Find the parent process to map lanes to it
-            pass  # lanes are collected below
+                elements[elem_id] = {'type': lt, 'name': elem_name}
+        elif lt == 'laneSet':
+            pass
 
     # Collect lanes per process by walking the tree structure
     for elem in root.iter():
-        local_tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-        if local_tag == 'process':
+        if local(elem.tag) == 'process':
             proc_id = elem.get('id', '')
             lanes = []
             for child in elem.iter():
-                child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                if child_tag == 'lane':
+                if local(child.tag) == 'lane':
                     lane_id = child.get('id')
                     if lane_id:
                         lanes.append(lane_id)
             if lanes:
                 process_lanes[proc_id] = lanes
 
-    # Build participant → lanes mapping
-    participant_lanes = {}  # participant_id -> [lane_id, ...]
+    participant_lanes = {}
     for part_id, proc_ref in participant_process.items():
         if proc_ref in process_lanes:
             participant_lanes[part_id] = process_lanes[proc_ref]
 
-    # Pass 2: Extract diagram coordinates
-    for elem in root.iter():
-        local_tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+    # Build a quick map of flow stroke colors from flows if any
+    flow_stroke_by_id = {f['id']: f.get('stroke_color') for f in flows}
 
-        if local_tag == 'BPMNShape':
+    # Pass 2: Extract DI (diagram) coordinates and DI colors
+    for elem in root.iter():
+        lt = local(elem.tag)
+        if lt == 'BPMNShape':
             bpmn_element = elem.get('bpmnElement')
-            is_horiz_attr = elem.get('isHorizontal', '')
-            is_horizontal = is_horiz_attr.lower() == 'true' if is_horiz_attr else None
+            is_horizontal = None
+            ih_attr = elem.get('isHorizontal', '')
+            if ih_attr:
+                is_horizontal = ih_attr.lower() == 'true'
             bounds = None
             label_bounds = None
+            fill_color = None
+            stroke_color = None
+
             for child in elem:
-                child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                if child_tag == 'Bounds':
+                ct = local(child.tag)
+                # Geometry
+                if ct == 'Bounds':
                     bounds = child
-                elif child_tag == 'BPMNLabel':
-                    # Look for dc:Bounds inside BPMNLabel
-                    for lbl_child in child:
-                        lbl_tag = lbl_child.tag.split('}')[-1] if '}' in lbl_child.tag else lbl_child.tag
-                        if lbl_tag == 'Bounds':
-                            label_bounds = lbl_child
+                elif ct == 'BPMNLabel':
+                    for lbl in child:
+                        if local(lbl.tag) == 'Bounds':
+                            label_bounds = lbl
                             break
+                # DI colors as child elements
+                else:
+                    # Inspect namespace
+                    ns = child.tag.split('}')[0].strip('{') if '}' in child.tag else ''
+                    if ct == 'fill' and ('biocolor' in ns or ns.endswith('/biocolor/1.0')):
+                        if child.text:
+                            fill_color = child.text
+                    elif ct == 'stroke' and ('biocolor' in ns or ns.endswith('/biocolor/1.0')):
+                        if child.text:
+                            stroke_color = child.text
+                    elif ct == 'background-color':
+                        if child.text:
+                            fill_color = fill_color or child.text
+                    elif ct == 'border-color':
+                        if child.text:
+                            stroke_color = stroke_color or child.text
+
             if bpmn_element and bounds is not None:
-                shape_data = {
+                sd = {
                     'x': float(bounds.get('x', 0)),
                     'y': float(bounds.get('y', 0)),
                     'w': float(bounds.get('width', 100)),
                     'h': float(bounds.get('height', 80)),
                 }
                 if is_horizontal is not None:
-                    shape_data['is_horizontal'] = is_horizontal
-                # Extract BPMNLabel position (absolute coords in BPMN space)
+                    sd['is_horizontal'] = is_horizontal
                 if label_bounds is not None:
-                    shape_data['label_x'] = float(label_bounds.get('x', 0))
-                    shape_data['label_y'] = float(label_bounds.get('y', 0))
-                    shape_data['label_w'] = float(label_bounds.get('width', 80))
-                    shape_data['label_h'] = float(label_bounds.get('height', 27))
-                # Extract BPMN color attributes (bioc:fill, bioc:stroke)
-                # These appear as namespaced attributes on BPMNShape elements
-                for attr_name, attr_val in elem.attrib.items():
-                    local_attr = attr_name.split('}')[-1] if '}' in attr_name else attr_name
-                    if local_attr == 'fill' and 'bioc' in attr_name:
-                        shape_data['fill_color'] = attr_val
-                    elif local_attr == 'stroke' and 'bioc' in attr_name:
-                        shape_data['stroke_color'] = attr_val
-                    elif local_attr == 'background-color' and 'color' in attr_name:
-                        shape_data.setdefault('fill_color', attr_val)
-                    elif local_attr == 'border-color' and 'color' in attr_name:
-                        shape_data.setdefault('stroke_color', attr_val)
-                shapes[bpmn_element] = shape_data
+                    sd['label_x'] = float(label_bounds.get('x', 0))
+                    sd['label_y'] = float(label_bounds.get('y', 0))
+                    sd['label_w'] = float(label_bounds.get('width', 80))
+                    sd['label_h'] = float(label_bounds.get('height', 27))
 
-        elif local_tag == 'BPMNEdge':
+                # Merge DI colors first
+                if fill_color:
+                    sd['fill_color'] = fill_color
+                if stroke_color:
+                    sd['stroke_color'] = stroke_color
+
+                # Fallback to Signavio colors if DI colors absent
+                if bpmn_element in signavio_colors:
+                    sc = signavio_colors[bpmn_element]
+                    if 'fill_color' not in sd and sc.get('fill'):
+                        sd['fill_color'] = sc.get('fill')
+                    if 'stroke_color' not in sd and sc.get('stroke'):
+                        sd['stroke_color'] = sc.get('stroke')
+
+                shapes[bpmn_element] = sd
+
+        elif lt == 'BPMNEdge':
             bpmn_element = elem.get('bpmnElement')
+            if not bpmn_element:
+                continue
             waypoints = []
             label_bounds = None
+            edge_stroke = None
             for child in elem:
-                child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                if child_tag == 'waypoint':
-                    waypoints.append({
-                        'x': float(child.get('x', 0)),
-                        'y': float(child.get('y', 0)),
-                    })
-                elif child_tag == 'BPMNLabel':
-                    for lbl_child in child:
-                        lbl_tag = lbl_child.tag.split('}')[-1] if '}' in lbl_child.tag else lbl_child.tag
-                        if lbl_tag == 'Bounds':
+                ct = local(child.tag)
+                if ct == 'waypoint':
+                    waypoints.append({'x': float(child.get('x', 0)), 'y': float(child.get('y', 0))})
+                elif ct == 'BPMNLabel':
+                    for lbl in child:
+                        if local(lbl.tag) == 'Bounds':
                             label_bounds = {
-                                'x': float(lbl_child.get('x', 0)),
-                                'y': float(lbl_child.get('y', 0)),
-                                'w': float(lbl_child.get('width', 40)),
-                                'h': float(lbl_child.get('height', 14)),
+                                'x': float(lbl.get('x', 0)),
+                                'y': float(lbl.get('y', 0)),
+                                'w': float(lbl.get('width', 40)),
+                                'h': float(lbl.get('height', 14)),
                             }
                             break
-            if bpmn_element and waypoints:
+                else:
+                    ns = child.tag.split('}')[0].strip('{') if '}' in child.tag else ''
+                    if ct == 'stroke' and ('biocolor' in ns or ns.endswith('/biocolor/1.0')):
+                        if child.text:
+                            edge_stroke = child.text
+                    elif ct == 'border-color':
+                        if child.text:
+                            edge_stroke = edge_stroke or child.text
+
+            if waypoints:
                 edges[bpmn_element] = {'waypoints': waypoints}
                 if label_bounds:
                     edges[bpmn_element]['label'] = label_bounds
+                # Prefer DI edge color, else Signavio on the flow element
+                if edge_stroke:
+                    edges[bpmn_element]['stroke_color'] = edge_stroke
+                else:
+                    sc = flow_stroke_by_id.get(bpmn_element)
+                    if sc:
+                        edges[bpmn_element]['stroke_color'] = sc
 
     return elements, flows, shapes, edges, participant_lanes
-
 
 def get_element_category(elem_type):
     """Return shape category for a BPMN element type."""
@@ -862,7 +930,8 @@ def build_shape_xml(shape_id, category, pin_x, pin_y, w, h, name,
             font_size = 9
     else:
         font_size = 8
-    label_color = stroke_color if category in ('participant', 'lane') else None
+    # label_color = stroke_color if category in ('participant', 'lane') else None
+    label_color = '#000000' if category in ('participant', 'lane') else None
     char = _char_section(category, font_size, text_color=label_color)
     # Left-align annotations, center everything else
     para = _para_section(halign=0) if category == 'annotation' else _para_section()
@@ -1235,7 +1304,7 @@ def _arrow_geometry(from_pt, to_pt, bb_min_x, bb_min_y, arrow_len=0.08):
 {rows}</Section>'''
 
 
-def build_connector_xml(shape_id, waypoints, page_h, offset_x, offset_y, label='', label_pos=None):
+def build_connector_xml(shape_id, waypoints, page_h, offset_x, offset_y, label='', label_pos=None, line_color=None):
     """Build a connector (sequence flow) from waypoints."""
     return _build_line_shape(shape_id, 'Connector', waypoints, page_h, offset_x, offset_y,
                              line_color=CONNECTOR_COLOR, line_weight=CONNECTOR_WEIGHT,
@@ -1244,7 +1313,7 @@ def build_connector_xml(shape_id, waypoints, page_h, offset_x, offset_y, label='
                              label_pos=label_pos)
 
 
-def build_message_flow_xml(shape_id, waypoints, page_h, offset_x, offset_y, label='', label_pos=None):
+def build_message_flow_xml(shape_id, waypoints, page_h, offset_x, offset_y, label='', label_pos=None, line_color=None):
     """Build a dashed connector for message flows."""
     return _build_line_shape(shape_id, 'MsgFlow', waypoints, page_h, offset_x, offset_y,
                              line_color=MSG_FLOW_COLOR, line_weight=CONNECTOR_WEIGHT,
@@ -1254,7 +1323,7 @@ def build_message_flow_xml(shape_id, waypoints, page_h, offset_x, offset_y, labe
                              label_pos=label_pos)
 
 
-def build_association_xml(shape_id, waypoints, page_h, offset_x, offset_y):
+def build_association_xml(shape_id, waypoints, page_h, offset_x, offset_y, line_color=None):
     """Build a dotted connector for associations (annotation links)."""
     return _build_line_shape(shape_id, 'Assoc', waypoints, page_h, offset_x, offset_y,
                              line_color='#999999', line_weight='0.01',
@@ -1418,11 +1487,11 @@ def build_vsdx(elements, flows, shapes, edges, output_path, process_name='',
             label_pos = edge_data.get('label')  # BPMN label bounds or None
             flow_type = flow.get('type', 'sequenceFlow')
             if flow_type == 'messageFlow':
-                xml = build_message_flow_xml(next_id, waypoints, page_h, offset_x, offset_y, flow.get('name', ''), label_pos=label_pos)
+                xml = build_message_flow_xml(next_id, waypoints, page_h, offset_x, offset_y, flow.get('name', ''), label_pos=label_pos, line_color=edges.get(flow['id'], {}).get('stroke_color'))
             elif flow_type == 'association':
-                xml = build_association_xml(next_id, waypoints, page_h, offset_x, offset_y)
+                xml = build_association_xml(next_id, waypoints, page_h, offset_x, offset_y, line_color=edges.get(flow['id'], {}).get('stroke_color'))
             else:
-                xml = build_connector_xml(next_id, waypoints, page_h, offset_x, offset_y, flow.get('name', ''), label_pos=label_pos)
+                xml = build_connector_xml(next_id, waypoints, page_h, offset_x, offset_y, flow.get('name', ''), label_pos=label_pos, line_color=edges.get(flow['id'], {}).get('stroke_color'))
             if xml:
                 shape_xml_parts.append(xml)
                 next_id += 1
